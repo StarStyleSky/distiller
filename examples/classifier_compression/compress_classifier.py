@@ -128,7 +128,7 @@ parser.add_argument('--quantize', action='store_true',
 parser.add_argument('--gpus', metavar='DEV_ID', default=None,
                     help='Comma-separated list of GPU device IDs to be used (default is to use all available devices)')
 parser.add_argument('--name', '-n', metavar='NAME', default=None, help='Experiment name')
-
+parser.add_argument('--adc', dest='ADC', action='store_true', help='temp HACK')
 
 def check_pytorch_version():
     if torch.__version__ < '0.4.0':
@@ -220,6 +220,11 @@ def main():
     msglogger.info("Optimizer (%s): momentum=%s decay=%s", type(optimizer),
                    args.momentum, args.weight_decay)
 
+
+    import ADC
+    if args.ADC:
+        ADC.do_adc(model, args.dataset, args.arch)
+        exit()
 
     # This sample application can be invoked to produce various summary reports.
     if args.summary:
