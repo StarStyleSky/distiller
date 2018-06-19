@@ -54,7 +54,6 @@ def model_summary(model, optimizer, what, dataset=None):
         total_macs = df['MACs'].sum()
         print(t)
         print("Total MACs: " + "{:,}".format(total_macs))
-
     elif what == 'optimizer':
         optimizer_summary(optimizer)
     elif what == 'model':
@@ -71,6 +70,8 @@ def model_summary(model, optimizer, what, dataset=None):
             if len(module._modules) == 0:
                 nodes.append([name, module.__class__.__name__])
         print(tabulate(nodes, headers=['Name', 'Type']))
+    else:
+        raise ValueError("%s is not a supported summary type" % what)
 
 def optimizer_summary(optimizer):
     assert isinstance(optimizer, torch.optim.SGD)
