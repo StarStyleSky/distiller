@@ -22,7 +22,7 @@ module_path = os.path.abspath(os.path.join('..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
 import distiller
-
+import common
 import pytest
 from models import ALL_MODEL_NAMES, create_model
 from apputils import SummaryGraph, onnx_name_2_pytorch_name, save_checkpoint, load_checkpoint
@@ -33,32 +33,15 @@ fh = logging.FileHandler('test.log')
 logger = logging.getLogger()
 logger.addHandler(fh)
 
-def find_module_by_name(model, module_to_find):
-    for name, m in model.named_modules():
-        if name == module_to_find:
-            return m
-    return None
-
-
-def setup_test(arch, dataset):
-    model = create_model(False, dataset, arch, parallel=False)
-    assert model is not None
-
-    # Create the masks
-    zeros_mask_dict = {}
-    for name, param in model.named_parameters():
-        masker = distiller.ParameterMasker(name)
-        zeros_mask_dict[name] = masker
-    return model, zeros_mask_dict
 
 def test_ranked_filter_pruning():
-    model, zeros_mask_dict = setup_test("resnet20_cifar", "cifar10")
+    model, zeros_mask_dict = common.setup_test("resnet20_cifar", "cifar10")
 
     # Test that we can access the weights tensor of the first convolution in layer 1
     conv1_p = distiller.model_find_param(model, "layer1.0.conv1.weight")
     assert conv1_p is not None
 
-    # Test that there are no zero-channels
+    # Test that there are no zero-filters
     assert distiller.sparsity_3D(conv1_p) == 0.0
 
     # Create a filter-ranking pruner
@@ -66,7 +49,7 @@ def test_ranked_filter_pruning():
     pruner = distiller.pruning.L1RankedStructureParameterPruner("filter_pruner", reg_regims)
     pruner.set_param_mask(conv1_p, "layer1.0.conv1.weight", zeros_mask_dict, meta=None)
 
-    conv1 = find_module_by_name(model, "layer1.0.conv1")
+    conv1 = common.find_module_by_name(model, "layer1.0.conv1")
     assert conv1 is not None
     # Test that the mask has the correct fraction of filters pruned.
     # We asked for 10%, but there are only 16 filters, so we have to settle for 1/16 filters
@@ -79,7 +62,7 @@ def test_ranked_filter_pruning():
     assert distiller.sparsity_3D(conv1_p) == expected_pruning
 
     # Remove filters
-    conv2 = find_module_by_name(model, "layer1.0.conv2")
+    conv2 = common.find_module_by_name(model, "layer1.0.conv2")
     assert conv2 is not None
     assert conv1.out_channels == 16
     assert conv2.in_channels == 16
@@ -94,9 +77,9 @@ def test_arbitrary_channel_pruning():
     ARCH = "resnet20_cifar"
     DATASET = "cifar10"
 
-    model, zeros_mask_dict = setup_test(ARCH, DATASET)
+    model, zeros_mask_dict = common.setup_test(ARCH, DATASET)
 
-    conv2 = find_module_by_name(model, "layer1.0.conv2")
+    conv2 = common.find_module_by_name(model, "layer1.0.conv2")
     assert conv2 is not None
 
     # Test that we can access the weights tensor of the first convolution in layer 1
@@ -131,19 +114,20 @@ def test_arbitrary_channel_pruning():
     zeros_mask_dict["layer1.0.conv2.weight"].mask = mask
     zeros_mask_dict["layer1.0.conv2.weight"].apply_mask(conv2_p)
     all_channels = set([ch for ch in range(num_channels)])
-    channels_removed = all_channels - set(distiller.find_nonzero_channels(conv2_p, "layer1.0.conv2.weight"))
-    logger.info(channels_removed)
+    nnz_channels = set(distiller.find_nonzero_channels_list(conv2_p, "layer1.0.conv2.weight"))
+    channels_removed = all_channels - nnz_channels
+    logger.info("Channels removed {}".format(channels_removed))
 
     # Now, let's do the actual network thinning
     distiller.remove_channels(model, zeros_mask_dict, ARCH, DATASET)
-    conv1 = find_module_by_name(model, "layer1.0.conv1")
+    conv1 = common.find_module_by_name(model, "layer1.0.conv1")
     logger.info(conv1)
     logger.info(conv2)
     assert conv1.out_channels == 14
     assert conv2.in_channels == 14
     assert conv1.weight.size(0) == 14
     assert conv2.weight.size(1) == 14
-    bn1 = find_module_by_name(model, "layer1.0.bn1")
+    bn1 = common.find_module_by_name(model, "layer1.0.bn1")
     assert bn1.running_var.size(0) == 14
     assert bn1.running_mean.size(0) == 14
     assert bn1.num_features == 14
@@ -155,25 +139,29 @@ def test_arbitrary_channel_pruning():
     #   - Make sure that after loading, the model still has hold of the thinning recipes
     #   - Make sure that after a 2nd load, there no problem loading (in this case, the
     #   - tensors are already thin, so this is a new flow)
+    # (1)
     save_checkpoint(epoch=0, arch=ARCH, model=model, optimizer=None)
     model_2 = create_model(False, DATASET, ARCH, parallel=False)
     dummy_input = torch.randn(1, 3, 32, 32)
     model(dummy_input)
     model_2(dummy_input)
-    conv2 = find_module_by_name(model_2, "layer1.0.conv2")
+    conv2 = common.find_module_by_name(model_2, "layer1.0.conv2")
     assert conv2 is not None
     with pytest.raises(KeyError):
         model_2, compression_scheduler, start_epoch = load_checkpoint(model_2, 'checkpoint.pth.tar')
-
     compression_scheduler = distiller.CompressionScheduler(model)
     hasattr(model, 'thinning_recipes')
+
+    # (2)
     save_checkpoint(epoch=0, arch=ARCH, model=model, optimizer=None, scheduler=compression_scheduler)
     model_2, compression_scheduler, start_epoch = load_checkpoint(model_2, 'checkpoint.pth.tar')
     assert hasattr(model_2, 'thinning_recipes')
     logger.info("test_arbitrary_channel_pruning - Done")
 
+    # (3)
     save_checkpoint(epoch=0, arch=ARCH, model=model_2, optimizer=None, scheduler=compression_scheduler)
     model_2, compression_scheduler, start_epoch = load_checkpoint(model_2, 'checkpoint.pth.tar')
+    assert hasattr(model_2, 'thinning_recipes')
     logger.info("test_arbitrary_channel_pruning - Done 2")
 
 
